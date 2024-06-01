@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonar-svc
+  namespace: sonarqube
+  labels:
+    app: sonar
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    port: 9000
+    targetPort: 9000
+    nodePort: 30912
+  selector:
+    app: sonar

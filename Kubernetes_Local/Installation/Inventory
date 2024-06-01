@@ -1,0 +1,4 @@
+[MASTERS]
+MASTER1 ansible_host=<IP> ansible_user=<USERNAME>
+[WORKERS]
+WORKER1  ansible_host=<IP> ansible_user=<USERNAME>

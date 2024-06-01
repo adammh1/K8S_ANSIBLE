@@ -1,0 +1,42 @@
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: nexus
+      namespace: nexus
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+            app: nexus-server
+      template:
+        metadata:
+          labels:
+            app: nexus-server
+        spec:
+          serviceAccountName: nexus-admin
+          containers:
+            - name: nexus
+              image: sonatype/nexus3:latest
+              resources:
+                limits:
+                  memory: "4Gi"
+                  cpu: "4000m"
+                requests:
+                  memory: "2Gi"
+                  cpu: "1500m"
+              ports:
+                - containerPort: 8081
+                  name: http
+                - containerPort: 8443
+                  name: https
+              volumeMounts:
+                - name: nexus-pv-volume
+                  mountPath: /nexus-data
+              env:
+              - name: INSTALL4J_ADD_VM_PARAMS
+                value: "-Xms2703m -Xmx2703m -XX:MaxDirectMemorySize=2703m -Djava.util.prefs.userRoot=/nexus-data/prefs"
+          volumes:
+            - name: nexus-pv-volume
+              persistentVolumeClaim:
+                  claimName: nexus-pv-claim
+

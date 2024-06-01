@@ -1,0 +1,111 @@
+- hosts: all
+  become: yes
+  become_user: root
+  tasks:
+    - name: edit /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{item}}"
+      with_items:
+        - "{{ansible_host}} {{ansible_user}}"
+        - "{{ansible_host}} {{ansible_user}} "
+        - "{{ansible_host}} {{ansible_user}}"
+    - name: Disable swap in /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^/dev/.*swap.*'
+        replace: '#\g<0>'
+        backup: yes
+    - name: Turn off swap
+      command: swapoff -a
+    - name: installing prerequisites for kubernetes
+      apt:
+       name:
+        - gnupg
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - vim
+        - lsb-release
+        - software-properties-common
+       state: present
+    - name: add docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ansible_distribution_release}} stable
+        state: present
+        filename: docker
+        mode: 0600
+        update_cache: yes
+    - name: update
+      command: sudo apt update
+    - name: install docker
+      apt:
+       name:
+         - docker-ce
+         - docker-ce-cli
+         - containerd.io
+         - docker-buildx-plugin
+         - docker-compose-plugin
+       state: present
+    - name: enable service
+      command: "{{item}}"
+      with_items:
+       - sudo systemctl enable docker.service
+       - sudo systemctl enable containerd.service
+    - name: configure containerd
+      shell: "{{item}}"
+      with_items:
+        - containerd config default > config.toml
+        - sudo sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' config.toml
+        - sudo systemctl restart containerd
+        - sudo systemctl enable containerd
+      args:
+        chdir: /etc/containerd
+    - name: Create a empty file for kubernetes sysctl params.
+      copy:
+       content: ""
+       dest: /etc/sysctl.d/99-kubernetes-cri.conf
+       force: no
+    - name: Configure sysctl params for Kubernetes.
+      lineinfile:
+       path: /etc/sysctl.d/99-kubernetes-cri.conf
+       line: "{{ item }}"
+      with_items:
+       - 'net.bridge.bridge-nf-call-iptables  = 1'
+       - 'net.ipv4.ip_forward                 = 1'
+       - 'net.bridge.bridge-nf-call-ip6tables = 1'
+    - name: Apply sysctl params without reboot.
+      command: sysctl --system
+    - name: Add Kubernetes apt-key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: "0644"
+        force: true
+
+    - name: Add Kubernetes APT repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
+        state: present
+        update_cache: yes
+    - name: Installing Kubernetes Cluster Packages.
+      apt:
+       name:
+         - kubeadm
+         - kubectl
+         - kubelet
+         - kubernetes-cni
+       state: present
+    - name: Hold a package
+      dpkg_selections:
+       name: "{{ item }}"
+       selection: hold
+      loop:
+         - kubeadm
+         - kubectl
+         - kubelet
+         - kubernetes-cni

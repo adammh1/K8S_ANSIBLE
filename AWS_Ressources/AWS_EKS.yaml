@@ -1,0 +1,193 @@
+---
+- name: Create AWS RESSOURCES
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    worker_type: t2.micro
+    cluster_name: EKS-CLUSTER
+    worker_group_name: worker-group-1
+    vpc_name: EKS
+    region: eu-west-2
+    vpc_cidr_block: 172.30.0.0/16
+    subnets:
+      - name: public_subnet1 
+        cidr_block: "172.30.10.0/24"
+        az: "eu-west-2a"
+        map_public: true
+      - name: public_subnet2
+        cidr_block: "172.30.20.0/24"
+        az: "eu-west-2b"
+        map_public: true
+      - name: private_subnet
+        cidr_block: "172.30.100.0/24"
+        az: "eu-west-2c"
+        map_public: false
+    my_ip: "{{ lookup('pipe', 'curl -sS ifconfig.me') }}/32"
+  tasks:
+  ######################################VPC####################################
+    - name: Create VPC
+      ec2_vpc_net:
+        name: "{{ vpc_name }}"
+        cidr_block: "{{ vpc_cidr_block }}"
+        region: "{{ region }}"
+        state: present
+      register: vpc
+    - name: Set VPC fact
+      set_fact:
+        vpc_id: "{{ vpc.vpc.id }}"
+  ##################################SUBNETS####################################
+
+    - name: Create Subnets
+      ec2_vpc_subnet:
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ item.cidr_block }}"
+        state: present
+        region: "{{ region }}"
+        az: "{{ item.az }}" 
+        map_public: "{{ item.map_public }}"
+      with_items: "{{ subnets }}"
+      register: subnets
+    - name: Set subnet facts for public subnets
+      set_fact:
+        "{{ item.item.name }}_id": "{{ item.subnet.id }}"
+      with_items: "{{ subnets.results }}"
+      when: item.item.map_public == true
+    - name: Set subnet facts
+      set_fact:
+        subnet_id: "{{ item.subnet.id }}"
+      with_items: "{{ subnets.results }}"
+
+  ############################INTENET_GATEWAY###################################
+
+    - name: Create Internet Gateway
+      ec2_vpc_igw:
+        vpc_id: "{{ vpc_id }}"
+        state: present
+        region: "{{ region }}"
+        resource_tags:
+          Name: "{{ vpc_name }}-IGW"
+      register: internet_gateway
+    - name: Set Internet Gateway fact
+      set_fact:
+        internet_gateway_id: "{{ internet_gateway.gateway_id }}"
+    
+  ##########################DEFAULT_ROUTES#################################
+
+    - name: Gather information about any VPC route table within VPC with ID 
+      amazon.aws.ec2_vpc_route_table_info:
+        filters:
+          vpc-id: "{{ vpc_id }}"
+      register: existing_route_tables
+    - name: Create Default Route Table
+      ec2_vpc_route_table:
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        subnets:
+          - "{{ public_subnet2_id }}"
+          - "{{ public_subnet1_id }}"
+        state: present
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ internet_gateway_id }}"
+      register: routes
+      when: existing_route_tables.route_tables | length != 2
+
+    ############################SECURITY_GROUP#################################
+
+    - name: Create Security Group
+      ec2_group:
+        name: "{{ vpc_name }}-SecurityGroup"
+        description: "Security Group for {{ vpc_name }} VPC"
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: "{{ my_ip }}"
+          - proto: all
+            from_port: 0
+            to_port: 0
+            cidr_ip: "192.168.1.0/24"
+      register: security_group
+    - name: Set Security Group fact
+      set_fact:
+        security_group_id: "{{ security_group.group_id }}"
+
+  ##############################EKS_CLUSTER##################################
+
+    - name: Create an Amazon EKS Cluster
+      community.aws.eks_cluster:
+       name: EKS-CLUSTER
+       version: '1.27'
+       role_arn: arn:aws:iam::<ID>:role/eksRole
+       subnets:
+         - "{{ public_subnet2_id }}"
+         - "{{ public_subnet1_id }}"
+       security_groups:
+         - "{{ security_group.group_id }}"
+       wait: true
+       region: eu-west-2
+      register: eks_cluster
+
+    ###############################WORKER_NODE#################################
+
+    - name: Create a worker node group for the Amazon EKS cluster
+      community.aws.eks_nodegroup:
+       cluster_name: "{{ cluster_name }}"
+       name: worker-group-1
+       wait: yes
+       node_role: arn:aws:iam::<ID>:role/eksworkers
+       labels: 
+         "hostname": "{{ item.hostname }}"
+       instance_types:
+         - t2.micro
+       scaling_config:
+         min_size: 2
+         desired_size: 2
+         max_size: 3
+       remote_access:
+          ec2_ssh_key: keyto
+          source_sg:
+             - "{{ security_group.group_id }}"
+       subnets:
+         - "{{ public_subnet2_id }}"
+         - "{{ public_subnet1_id }}"
+      loop:
+        - { hostname: worker1 }
+        - { hostname: worker2 }
+      register: node_group
+#################################UPDATE_KUBECONFIG######################################
+
+    - name: Update kubeconfig
+      command: >
+        aws eks update-kubeconfig
+        --region "{{ region }}"
+        --name "{{ cluster_name }}"
+ #####################################ECR###################################
+
+    - name: Create ECR Private Repo
+      community.aws.ecs_ecr:
+        name: <NameOfPrivateRepo>  
+        state: present
+         #image_tag_mutability: immutable  
+      register: ECR
+      
+    - name: Print VPC Details
+      debug:
+        msg: |
+          VPC ID: {{ vpc_id }}
+          Subnets ID: {{ subnet_id }}
+          Internet Gateway ID: {{ internet_gateway_id }}
+          Security Group ID: {{ security_group_id }}
+    - name: Output Cluster Information
+      debug:
+        msg: |
+          EKS Cluster: {{ cluster_name }}
+          Worker Node Instance Type: {{ worker_type }}
+          Worker Node Name: {{worker_group_name}}
+    - name: ECR Information
+      debug:
+        msg: |
+          ECR: {{ ECR }}
+

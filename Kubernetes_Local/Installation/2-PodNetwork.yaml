@@ -1,0 +1,15 @@
+ - hosts: MASTERS
+   become: yes
+   become_user: root
+   tasks:
+     - name: Create Pod Network
+       shell: "{{ item }}"
+       with_items:
+        - kubectl create  -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/tigera-operator.yaml
+        - kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/custom-resources.yaml
+     - pause: seconds=30
+     - name: Get the token for joining the nodes with Kuberentes master.
+       shell: kubeadm token create  --print-join-command
+       register: kubernetes_join_command
+     - debug:
+         msg: "{{ kubernetes_join_command.stdout }}"
