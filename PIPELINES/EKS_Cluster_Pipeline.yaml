@@ -1,0 +1,71 @@
+name: Build
+on:
+  push:
+    branches:
+      - EKS
+jobs:
+  build-and-debloy:
+    name: Build
+    runs-on: "self-hosted"
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+      - uses: sonarsource/sonarqube-scan-action@master
+        env:
+            SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+            SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      - uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+            SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+      - name: Disable treating warnings as errors
+        run: echo "CI=false" >> $GITHUB_ENV
+      - name: Get application version
+        id: get-version
+        run: echo "::set-output name=version::$(node -p "require('./package.json').version")"
+      - name: Use Node.js 
+        uses: actions/setup-node@v3
+      - run: npm ci --legacy-peer-deps
+      - run: npm run build --if-present
+      - name: Build artifact
+        run:  npm pack
+      - name: Publish NPM package to Nexus
+        run: npm publish ./horizon-${{ steps.get-version.outputs.version }}.tgz --registry=${{ secrets.NEXUS_REPO }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2 
+        with:
+          aws-region: eu-west-2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-west-2.amazonaws.com/horizonweb:latest .
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-west-2.amazonaws.com/horizonweb:latest
+      - name: Get kubeconfig file
+        run:  aws eks update-kubeconfig --region eu-west-2 --name EKS-CLUSTER
+      - name: Create Namespace if not exists
+        id: create-namespace
+        run: |
+          namespace="webapp"
+          if ! kubectl get namespace "${namespace}" --output=name 2>/dev/null; then
+            echo "Namespace does not exist. Creating..."
+            kubectl create namespace "${namespace}"
+            echo "::set-output name=namespace::${namespace}"
+          else
+            echo "Namespace already exists."
+            echo "::set-output name=namespace::${namespace}"
+          fi
+
+      - name: Deploy to EKS Cluster
+        env:
+            NAMESPACE: ${{ steps.create-namespace.outputs.namespace }}
+            IMAGE_REFERENCE: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-west-2.amazonaws.com/horizonweb:latest
+        run: |
+          kubectl config use-context ${{ secrets.EKS_CONTEXT}}
+          kubectl apply -f ./kubernetes/EKS_Deployement/ServiceAccount.yaml -n  $NAMESPACE
+          kubectl apply -f ./kubernetes/EKS_Deployement/Volume.yaml -n  $NAMESPACE
+          cat ./kubernetes/EKS_Deployement/Deloyement.yaml | envsubst | kubectl apply -n   $NAMESPACE  -f -
+          kubectl apply -f ./kubernetes/EKS_Deployement/service.yaml -n  $NAMESPACE
