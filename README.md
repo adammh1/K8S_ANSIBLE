@@ -10,3 +10,4 @@ SSL/TLS certificate management for secure communication.
 ## Cloud Deployment:
 Seamless deployment on cloud platforms.
 Scalability and reliability optimizations.
+![GLOBALAWS](https://github.com/user-attachments/assets/68075b03-7da5-4412-bc7b-0b244eb759f5)
